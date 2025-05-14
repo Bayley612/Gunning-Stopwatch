@@ -1,0 +1,15 @@
+Gunning Stopwatch Full Release for Puzzle Pirates
+
+This program 
+
+- Captures your screen searching for a specific image on the gunning puzzle of puzzle pirates.
+- Shows whether it is Running or Waiting for the puzzle board to show
+- Once it has found it, the stopwatch will start (There should be next to no delay between opening the puzzle and it starting the stopwatch)
+- Once it can no longer see it, the stopwatch will end (There should be next to no delay between opening the puzzle and it starting the stopwatch)
+- It will display Current, Most Recent and your personal Best time in each session since opening the program
+- The Personal Best time will only update if it has been longer then 15 seconds on the puzzle board due to any less then this not counting to the games score
+- It should have no more then a few milliseconds delay between starting and stopping so your time shown will be accurate
+
+If you wish to do any adjustments to the program yourself it was written in C++ Entirely by ChatGPT with the help of a human capturing its errors. You can input the source code into Microsoft Visual Studio with OpenCV dependencies 
+
+Have fun this program is just to help you figure out your time on the puzzle and workout your own average time so you can check if you are getting any better as you train yourself in gunning! 

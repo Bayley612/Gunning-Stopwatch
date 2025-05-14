@@ -1,0 +1,196 @@
+#include <windows.h>
+#include <opencv2/opencv.hpp>
+#include <chrono>
+#include <string>
+#include <fstream>
+#include <iostream>
+#include <thread>
+
+#pragma comment(lib, "opencv_world4110.lib")
+#define IDT_TIMER1 1
+using namespace std::chrono;
+
+// GUI handles
+HWND hwndCurrent, hwndLast, hwndBest, hwndStatus, hwndMain;
+
+// Time tracking
+steady_clock::time_point startTime;
+double lastTime = 0.0;
+double bestTime = 0.0;
+bool running = false;
+
+// Image to detect
+cv::Mat target;
+
+// Capture full virtual screen
+cv::Mat CaptureScreenMat() {
+    int screenX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int screenY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int screenWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    HDC hScreenDC = GetDC(NULL);
+    HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
+    HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, screenWidth, screenHeight);
+    SelectObject(hMemoryDC, hBitmap);
+    BitBlt(hMemoryDC, 0, 0, screenWidth, screenHeight, hScreenDC, screenX, screenY, SRCCOPY);
+
+    BITMAP bmpScreen;
+    GetObject(hBitmap, sizeof(BITMAP), &bmpScreen);
+
+    cv::Mat mat(bmpScreen.bmHeight, bmpScreen.bmWidth, CV_8UC4);
+    GetBitmapBits(hBitmap, bmpScreen.bmHeight * bmpScreen.bmWidthBytes, mat.data);
+    cv::cvtColor(mat, mat, cv::COLOR_BGRA2BGR);
+
+    DeleteObject(hBitmap);
+    DeleteDC(hMemoryDC);
+    ReleaseDC(NULL, hScreenDC);
+
+    return mat;
+}
+
+// Resize for faster matching
+cv::Mat ResizeForMatching(const cv::Mat& img, double scale) {
+    cv::Mat resized;
+    cv::resize(img, resized, cv::Size(), scale, scale, cv::INTER_LINEAR);
+    return resized;
+}
+
+// Detect image
+bool ImageFound(const cv::Mat& haystack, const cv::Mat& needle) {
+    if (haystack.empty() || needle.empty()) return false;
+
+    double scale = 0.5;
+    cv::Mat smallHaystack = ResizeForMatching(haystack, scale);
+    cv::Mat smallNeedle = ResizeForMatching(needle, scale);
+
+    if (smallHaystack.empty() || smallNeedle.empty()) return false;
+
+    cv::cvtColor(smallHaystack, smallHaystack, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(smallNeedle, smallNeedle, cv::COLOR_BGR2GRAY);
+
+    cv::Mat result;
+    cv::matchTemplate(smallHaystack, smallNeedle, result, cv::TM_CCOEFF_NORMED);
+
+    double maxVal;
+    cv::minMaxLoc(result, nullptr, &maxVal, nullptr, nullptr);
+    std::cout << "Match score: " << maxVal << std::endl;
+
+    return maxVal >= 0.4;
+}
+
+// Format time
+std::string FormatTime(double seconds) {
+    int minutes = static_cast<int>(seconds) / 60;
+    int secs = static_cast<int>(seconds) % 60;
+    int ms = static_cast<int>((seconds - static_cast<int>(seconds)) * 1000);
+    char buffer[32];
+    sprintf_s(buffer, "%02d:%02d.%03d", minutes, secs, ms);
+    return buffer;
+}
+
+// Start timer
+void StartTimer() {
+    running = true;
+    startTime = steady_clock::now();
+    SetWindowTextA(hwndStatus, "Status: Running");
+    SetTimer(hwndMain, IDT_TIMER1, 15, NULL);
+}
+
+// Stop timer
+void StopTimer() {
+    running = false;
+    KillTimer(hwndMain, IDT_TIMER1);
+
+    auto now = steady_clock::now();
+    lastTime = duration_cast<duration<double>>(now - startTime).count();
+
+    SetWindowTextA(hwndStatus, "Status: Waiting");
+    SetWindowTextA(hwndCurrent, ("Current: " + FormatTime(lastTime)).c_str());
+    SetWindowTextA(hwndLast, ("Last: " + FormatTime(lastTime)).c_str());
+
+    if (lastTime >= 15.0 && (bestTime == 0.0 || lastTime < bestTime)) {
+        bestTime = lastTime;
+        SetWindowTextA(hwndBest, ("Best: " + FormatTime(bestTime)).c_str());
+    }
+
+    std::ofstream out("times.txt", std::ios::app);
+    out << FormatTime(lastTime) << "\n";
+    out.close();
+}
+
+
+// Detection loop
+void StartDetectionLoop() {
+    std::thread([] {
+        while (true) {
+            if (target.empty()) continue;
+            cv::Mat screen = CaptureScreenMat();
+            bool found = ImageFound(screen, target);
+
+            if (found && !running) {
+                StartTimer();
+            }
+            else if (!found && running) {
+                StopTimer();
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        }).detach();
+}
+
+// GUI WndProc
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_TIMER:
+        if (wParam == IDT_TIMER1 && running) {
+            double current = duration_cast<duration<double>>(steady_clock::now() - startTime).count();
+            SetWindowTextA(hwndCurrent, ("Current: " + FormatTime(current)).c_str());
+        }
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+
+    default:
+        return DefWindowProc(hwnd, msg, wParam, lParam);
+    }
+}
+
+// WinMain
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+    SetProcessDPIAware();
+
+    target = cv::imread("target.png");
+    if (target.empty()) {
+        MessageBoxA(NULL, "Failed to load target.png", "Error", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    WNDCLASS wc = { };
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = "StopwatchClass";
+    RegisterClass(&wc);
+
+    hwndMain = CreateWindowEx(0, "StopwatchClass", "Gunning Stopwatch",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        100, 100, 240, 160, NULL, NULL, hInstance, NULL);
+    ShowWindow(hwndMain, nCmdShow);
+
+    hwndCurrent = CreateWindow("STATIC", "Current: 00:00.000", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, 10, 200, 18, hwndMain, NULL, NULL, NULL);
+    hwndLast = CreateWindow("STATIC", "Last: 00:00.000", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, 35, 200, 18, hwndMain, NULL, NULL, NULL);
+    hwndBest = CreateWindow("STATIC", "Best: 00:00.000", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, 60, 200, 18, hwndMain, NULL, NULL, NULL);
+    hwndStatus = CreateWindow("STATIC", "Status: Waiting", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, 85, 200, 18, hwndMain, NULL, NULL, NULL);
+
+    StartDetectionLoop();
+
+    MSG msg = { };
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    return 0;
+}
